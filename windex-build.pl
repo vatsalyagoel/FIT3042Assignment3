@@ -12,13 +12,13 @@ use Time::HiRes "usleep";
 use Cwd;
 
 #Globals
-use subs qw(main setParams loadSkippedWords normalizeURL traversePages indexPage writeToFile); #Functions in script
+use subs qw(main normalizeURL traversePages indexPage writeToFile loadSkippedWords setParams); #Functions in script
 
 my ( $indexName, $startURL, $skippedWordsFile ); #Mandatory Arguments
 
 my ( $maxDepth, $path ); #Optional arguments
 
-my cwd = getcwd; #Current Directory
+my $cwd = getcwd; #Current Directory
 
 my @skippedWords; #Array for skipped words
 
@@ -31,9 +31,11 @@ my $totalLinks = 0; #Total visited links
 my $maxLinks = 1000; #maximum links we can visit
 
 my $baseURL = "https://en.wikipedia.org";
+main;
 
 sub main {
 	setParams;
+	show_options
 	loadSkippedWords;
 
 	push @nextDepthLinks, $startURL;
@@ -56,6 +58,7 @@ sub normalizeURL {
 	$URL = $normalizer -> url;
 }
 
+#Breadth first traversal
 sub traversePages {
 
 	my $depth = 0;
@@ -77,21 +80,23 @@ sub traversePages {
 				usleep(200);
 			} 
 
-			if($visitedLinks >= $maxLinks) {
+			if($totalLinks >= $maxLinks) {
 				last;
 			}
 		}
+		$depth += 1;
 	}
 }
 
+#download page content and index words
 sub indexPage {
 	my $URL = $_[0];
 	my $ua = LWP::UserAgent -> new();
-	my $response = $ua -> get($URL);
+	my $response = $ua->get($URL);
 
-	unless (response -> is_success) {
-		say "Could not reach: $URL";
-		say $response -> status_line;
+	unless ($response -> is_success) {
+		print "Could not reach: $URL\n";
+		print $response -> status_line;
 		return;
 	}
 
@@ -103,7 +108,7 @@ sub indexPage {
 
 	$tree -> elementify;
 
-	my $content = $tree -> look_down("id", "mw-content-text"); #Only get page content
+	my $contentText = $tree -> look_down("id", "mw-content-text"); #Only get page content
 
 	my $references = $tree -> look_down("class", "references"); #Remove references
 
@@ -111,7 +116,7 @@ sub indexPage {
 		$references -> detach();
 	}
 
-	my @linksInPage = @{$content -> extract_links('a')};
+	my @linksInPage = @{$contentText -> extract_links('a')};
 
 	foreach(@linksInPage) {
 		my($link, $element, $attr, $tag) = @$_;
@@ -120,7 +125,7 @@ sub indexPage {
 		}
 	}
 
-	my %tags = %{$content->tagname_map};
+	my %tags = %{$contentText->tagname_map}; #match every heading
 
 	my @wordsInContent = ();
 
@@ -145,14 +150,103 @@ sub indexPage {
 
 	foreach (@wordsInContent) {
 		my $text = $_ -> as_text;
-		foreach my $word ($element_text =~ /\w+/g) {
+		foreach my $word ($text =~ /\w+/g) {
             $word = lc $word;
 
             unless ($word ~~ @skippedWords) {
-            	# body...
+            	if(exists $index{$word}) {
+            		push @{$index{$word}}, $URL unless $URL ~~ @{$index{$word}};
+            	} else {
+            		@{$index{$word}} = ($URL);
+            	}
             }
         }
 	}
+}
+
+#write index to file
+sub writeToFile {
+	my $fileName = $path . $indexName;
+	open(my $fh, '>', $fileName) or die "Could not open file $fileName\n";
+
+	foreach my $key (sort keys %index) {
+		my @wordLinks = @{$index{$key}};
+		print $fh $key;
+
+		foreach(@wordLinks) {
+			print $fh ",$_";
+		}
+
+		print $fh "\n";
+	}
+	close($fh);
+}
+
+#load skipped words
+sub loadSkippedWords {
+	open (my $fh, '<', $skippedWordsFile) or die "Could not open file $skippedWordsFile";
+	@skippedWords = split("\n", <$fh>);
+	close($fh);
+}
 
 
+#parse command line arguments
+sub setParams {
+	die "Error - Number of arguments " . scalar @ARGV . ". Expected 3-5 arguments.\n" unless @ARGV >= 3 && @ARGV <= 5;
+
+	($indexName, $startURL, $skippedWordsFile) = ( @ARGV );
+
+	die "Error - Invalid arg1: \"" . scalar $ARGV[0] . "\". Index filename not specified" unless $ARGV[0] =~ /\w+/; #no filename
+
+    die "Error - Invalid arg2: \"" . scalar $ARGV[1] . "\". Invalid Start URL" unless $ARGV[1] =~ /.+\.wikipedia\.org\/.*/; #Not a wikipedia url
+
+    die "Error - Invalid arg3: \"" . scalar $ARGV[2] . "\". File does not exist" unless -f $cwd . "/" . scalar $ARGV[2]; #noskipped words file
+
+    if (@ARGV >= 4) {
+        if ($ARGV[3] =~ /^maxdepth=\d$/) {
+
+            my @split = split(/=/, $ARGV[3]);
+            my $value = int $split[1];
+
+            if ($value >= 0 and $value <= 5) {
+                $maxDepth = $value;
+            } else {
+                print "Invalid maxdepth, setting to default=3.";
+                $maxDepth = 3;
+            }
+        } elsif ($ARGV[3] =~ /^dir=\w+/) {
+
+            my @split = split(/=/, $ARGV[3]);
+            my $value = $split[1];
+
+            if (-d $cwd . "/" . $value) {
+                $path = $cwd . "/" . $value . "/";
+            }
+        }
+    }
+
+    if (@ARGV == 5) {
+        if ($ARGV[4] =~ /^maxdepth=\d$/) {
+
+            my @split = split(/=/, $ARGV[4]);
+            my $value = int $split[1];
+
+            if ($value >= 0 and $value <= 5) {
+                $maxDepth = $value;
+            } else {
+                print "Invalid maxdepth, setting to default=3.";
+                $maxDepth = 3;
+            }
+        } elsif ($ARGV[4] =~ /^dir=\w+/) {
+
+            my @split = split(/=/, $ARGV[4]);
+            my $value = $split[1];
+
+            if (-d $cwd . "/" . $value) {
+                $path = $cwd . "/" . $value . "/";
+            }
+        }
+    }
+    $path = $cwd . "/" unless defined $path;
+    $maxDepth = 3 unless defined $maxDepth;
 }
